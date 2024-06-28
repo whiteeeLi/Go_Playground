@@ -3,6 +3,7 @@ package gee
 import (
 	"log"
 	"net/http"
+	"strings"
 )
 
 // HandlerFunc defines the request handler used by gee
@@ -53,13 +54,24 @@ func (r *RouterGroup) POST(pattern string, handler HandlerFunc) {
 	r.addRouter("POST", pattern, handler)
 }
 
+// Use is defined to add middleware to the group
+func (r *RouterGroup) Use(middlewares ...HandlerFunc) {
+	r.middlewares = append(r.middlewares, middlewares...)
+}
+
 // Run defines the method to start a http server
 func (engine *Engine) Run(addr string) (err error) {
 	return http.ListenAndServe(addr, engine)
 }
 
 func (engine *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	//这里可以看出来context是对 w 与 req 的封装
+	var middlewares []HandlerFunc
+	for _, group := range engine.groups {
+		if strings.HasPrefix(req.URL.Path, group.prefix) {
+			middlewares = append(middlewares, group.middlewares...)
+		}
+	}
 	c := newContext(w, req)
+	c.handlers = middlewares
 	engine.router.handle(c)
 }

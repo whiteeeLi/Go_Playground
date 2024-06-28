@@ -88,15 +88,16 @@ func (r *router) getRoute(method, path string) (*node, map[string]string) {
 
 // handle 执行handler 这个函数提供为ServeHTTP 使用
 func (r *router) handle(c *Context) {
-	n, param := r.getRoute(c.Method, c.Path)
+	n, params := r.getRoute(c.Method, c.Path)
 	//获取到匹配的路径后执行handler
 	if n != nil {
-		//储存Param到Context里面
-		c.Params = param
-		//获取handler并执行
 		key := c.Method + "-" + n.pattern
-		r.handlers[key](c)
+		c.Params = params
+		c.handlers = append(c.handlers, r.handlers[key])
 	} else {
-		c.String(http.StatusNotFound, "404 NOT FOUND: %s\n", c.Path)
+		c.handlers = append(c.handlers, func(c *Context) {
+			c.String(http.StatusNotFound, "404 NOT FOUND: %s\n", c.Path)
+		})
 	}
+	c.Next()
 }
