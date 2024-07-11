@@ -1,4 +1,4 @@
-package geecache
+package lru
 
 import "container/list"
 
@@ -37,6 +37,8 @@ func New(maxBytes int64, onEvicted func(key string, value Value)) *Cache {
 }
 
 // Get 用于查询
+// 这玩意需要并行么，我们之前实现了一个用于安全接受数据的结构体
+// 所以这里应该把数据写入结构体中并进行返回
 func (c *Cache) Get(key string) (value Value, ok bool) {
 	//如果查询到则执行if语句中的内容
 	if ele, ok := c.cache[key]; ok {
