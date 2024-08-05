@@ -2,6 +2,8 @@ package geecache
 
 import (
 	"fmt"
+	pb "geecache/geecachepb"
+	"geecache/singleflight"
 	"log"
 	"sync"
 )
@@ -26,6 +28,9 @@ type Group struct {
 	mainCache cache
 	//新增 peers 用于获取分布式节点
 	peers PeerPicker
+	// use singleflight.Group to make sure that
+	// each key is only fetched once
+	loader *singleflight.Group
 }
 
 var (
@@ -44,6 +49,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		loader:    &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -73,26 +79,53 @@ func (g *Group) Get(key string) (ByteView, error) {
 
 // 工具函数，服务于load函数，实现从peer中获取数据
 func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
-	bytes, err := peer.Get(g.name, key)
+	req := &pb.Request{
+		Group: g.name,
+		Key:   key,
+	}
+	res := &pb.Response{}
+	err := peer.Get(req, res)
 	if err != nil {
 		return ByteView{}, err
 	}
-	return ByteView{b: bytes}, nil
+	return ByteView{b: res.Value}, nil
 }
 
 // 因为添加了peers，所以load函数需要增加从分布式节点获取数据的代码
+//func (g *Group) load(key string) (value ByteView, err error) {
+//	//新增代码，从分布式节点获取数据
+//	if g.peers != nil {
+//		if peer, ok := g.peers.PickPeer(key); ok {
+//			if value, err = g.getFromPeer(peer, key); err == nil {
+//				return value, nil
+//			}
+//			log.Println("[GeeCache] Failed to get from peer", err)
+//		}
+//	}
+//	//新增代码结束
+//	return g.getLocally(key)
+//}
+
 func (g *Group) load(key string) (value ByteView, err error) {
-	//新增代码，从分布式节点获取数据
-	if g.peers != nil {
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err = g.getFromPeer(peer, key); err == nil {
-				return value, nil
+	// each key is only fetched once (either locally or remotely)
+	// regardless of the number of concurrent callers.
+	viewi, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.getFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[GeeCache] Failed to get from peer", err)
 			}
-			log.Println("[GeeCache] Failed to get from peer", err)
 		}
+
+		return g.getLocally(key)
+	})
+
+	if err == nil {
+		return viewi.(ByteView), nil
 	}
-	//新增代码结束
-	return g.getLocally(key)
+	return
 }
 
 func (g *Group) getLocally(key string) (ByteView, error) {
