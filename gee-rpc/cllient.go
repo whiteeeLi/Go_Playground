@@ -30,15 +30,15 @@ func (call *Call) done() {
 // with a single Client, and a Client may be used by
 // multiple goroutines simultaneously.
 type Client struct {
-	cc       codec.Codec
-	opt      *Option
-	sending  sync.Mutex // protect following
-	header   codec.Header
-	mu       sync.Mutex // protect following
-	seq      uint64
-	pending  map[uint64]*Call
-	closing  bool // user has called Close
-	shutdown bool // server has told us to stop
+	cc       codec.Codec      //cc 是消息的编解码器，和服务端类似，用来序列化将要发送出去的请求，以及反序列化接收到的响应。
+	opt      *Option          // option是在client初始化的时候就决定好的，需要与server协商后确认
+	sending  sync.Mutex       // protect following sending 是一个互斥锁，和服务端类似，为了保证请求的有序发送，即防止出现多个请求报文混淆。
+	header   codec.Header     // header 是每个请求的消息头，header 只有在请求发送时才需要，而请求发送是互斥的，因此每个客户端只需要一个，声明在 Client 结构体中可以复用。
+	mu       sync.Mutex       // protect following
+	seq      uint64           // seq 用于给发送的请求编号，每个请求拥有唯一编号。
+	pending  map[uint64]*Call //pending 存储未处理完的请求，键是编号，值是 Call 实例。
+	closing  bool             // user has called Close
+	shutdown bool             // server has told us to stop
 }
 
 // 用于在编译时检验client指针实现了io.Closer接口
@@ -65,7 +65,6 @@ func (client *Client) IsAvailable() bool {
 }
 
 // call相关的函数开始
-
 func (client *Client) registerCall(call *Call) (uint64, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -214,6 +213,7 @@ func Dial(network, address string, opts ...*Option) (client *Client, err error) 
 	if err != nil {
 		return nil, err
 	}
+	// 所以说白了就是对net中的Dial进行了封装
 	conn, err := net.Dial(network, address)
 	if err != nil {
 		return nil, err
