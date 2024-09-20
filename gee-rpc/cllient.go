@@ -1,6 +1,7 @@
 package geerpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // Call represents an active RPC.
@@ -207,24 +209,55 @@ func parseOptions(opts ...*Option) (*Option, error) {
 	return opt, nil
 }
 
-// Dial connects to an RPC server at the specified network address
-func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+type newClientFunc func(conn net.Conn, opt *Option) (client *Client, err error)
+
+type clientResult struct {
+	client *Client
+	err    error
+}
+
+func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (client *Client, err error) {
 	opt, err := parseOptions(opts...)
 	if err != nil {
 		return nil, err
 	}
-	// 所以说白了就是对net中的Dial进行了封装
-	conn, err := net.Dial(network, address)
+	// 这里没有使用之前的net.Dial 而是选择了 net.DialTimeout以实现 如果连接创建超时，返回错误。
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
 	if err != nil {
 		return nil, err
 	}
 	// close the connection if client is nil
 	defer func() {
-		if client == nil {
+		if err != nil {
 			_ = conn.Close()
 		}
 	}()
-	return NewClient(conn, opt)
+	// 创建管道实现超时检测
+	ch := make(chan clientResult)
+	// 单开一个协程去获取调用结果
+	go func() {
+		client, err := f(conn, opt)
+		//	通过通道返回结果
+		ch <- clientResult{client: client, err: err}
+	}()
+	// 如果timeout设置为0代表不设置超时检测
+	if opt.ConnectTimeout == 0 {
+		// 直接在这里阻塞等待
+		result := <-ch
+		return result.client, result.err
+	}
+	// 使用select实现多个协程运行结果的处理
+	select {
+	case <-time.After(opt.ConnectTimeout):
+		return nil, fmt.Errorf("rpc client: connect timeout: expect within %s", opt.ConnectTimeout)
+	case result := <-ch:
+		return result.client, result.err
+	}
+}
+
+// Dial connects to an RPC server at the specified network address
+func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+	return dialTimeout(NewClient, network, address, opts...)
 }
 
 // Go invokes the function asynchronously.
@@ -247,7 +280,14 @@ func (client *Client) Go(serviceMethod string, args, reply interface{}, done cha
 
 // Call invokes the named function, waits for it to complete,
 // and returns its error status.
-func (client *Client) Call(serviceMethod string, args, reply interface{}) error {
-	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
-	return call.Error
+func (client *Client) Call(ctx context.Context, serviceMethod string, args, reply interface{}) error {
+	call := client.Go(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	// context包自带超时检测功能，所以从ctx获得信息代表超时了，这个传入的ctx需要用户自己创建并输入
+	case <-ctx.Done():
+		client.removeCall(call.Seq)
+		return errors.New("rpc client: call failed: " + ctx.Err().Error())
+	case call := <-call.Done:
+		return call.Error
+	}
 }
