@@ -224,10 +224,11 @@ func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.
 		return
 	}
 	select {
-	// 这个位置直觉上有超时的风险
 	case <-time.After(timeout):
 		req.h.Error = fmt.Sprintf("rpc server: request handle timeout: expect within %s", timeout)
 		server.sendResponse(cc, req.h, invalidRequest, sending)
+		<-called
+		<-sent
 	case <-called:
 		<-sent
 	}
